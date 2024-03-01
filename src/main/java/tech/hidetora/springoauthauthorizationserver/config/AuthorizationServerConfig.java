@@ -4,6 +4,7 @@ import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -11,33 +12,33 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configurers.oauth2.server.resource.OAuth2ResourceServerConfigurer;
-import org.springframework.security.oauth2.core.AuthorizationGrantType;
-import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
-import org.springframework.security.oauth2.core.oidc.OidcScopes;
-import org.springframework.security.oauth2.server.authorization.client.InMemoryRegisteredClientRepository;
-import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
-import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
-import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
-import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
+import org.springframework.security.oauth2.server.authorization.token.JwtEncodingContext;
+import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenCustomizer;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 import tech.hidetora.springoauthauthorizationserver.key.KeyManager;
 
-import java.time.Duration;
-import java.util.UUID;
+import java.util.stream.Collectors;
+
+import static tech.hidetora.springoauthauthorizationserver.utils.Constants.AUTHORITIES_KEY;
 
 @Configuration
+@RequiredArgsConstructor
 @Slf4j
 public class AuthorizationServerConfig {
     private final CORSCustomizer corsCustomizer;
+//    private final PasswordEncoder passwordEncoder;
 
-    public AuthorizationServerConfig(CORSCustomizer corsCustomizer) {
-        this.corsCustomizer = corsCustomizer;
-    }
 
     @Bean
     @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -51,30 +52,30 @@ public class AuthorizationServerConfig {
         return http.formLogin(Customizer.withDefaults()).build();
     }
 
-    @Bean
-    RegisteredClientRepository registeredClientRepository() {
-        var registeredClientRepository = RegisteredClient.withId(UUID.randomUUID().toString())
-                .clientId("client")
-                .clientSecret("secret")
-                .scope(OidcScopes.OPENID)
-                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
-                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
-                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
-                .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
-                .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+//    @Bean
+//    RegisteredClientRepository registeredClientRepository() {
+//        var registeredClientRepository = RegisteredClient.withId(UUID.randomUUID().toString())
+//                .clientId("client")
+//                .clientSecret(passwordEncoder.encode("secret"))
+//                .scope(OidcScopes.OPENID)
+//                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+//                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
+//                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
 //                .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
-                .redirectUri("http://127.0.0.1:3000/login/oauth2")
-                .tokenSettings(TokenSettings.builder()
-                        .accessTokenTimeToLive(Duration.ofHours(1))
-                        .refreshTokenTimeToLive(Duration.ofHours(10))
-                        .build())
-                .clientSettings(ClientSettings.builder()
-                        .requireAuthorizationConsent(true)
-                        .requireProofKey(true)
-                        .build())
-                .build();
-        return new InMemoryRegisteredClientRepository(registeredClientRepository);
-    }
+//                .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+////                .authorizationGrantType(AuthorizationGrantType.CLIENT_CREDENTIALS)
+//                .redirectUri("http://127.0.0.1:4200/login/oauth2")
+//                .tokenSettings(TokenSettings.builder()
+//                        .accessTokenTimeToLive(Duration.ofHours(1))
+//                        .refreshTokenTimeToLive(Duration.ofHours(10))
+//                        .build())
+//                .clientSettings(ClientSettings.builder()
+//                        .requireAuthorizationConsent(true)
+//                        .requireProofKey(true)
+//                        .build())
+//                .build();
+//        return new InMemoryRegisteredClientRepository(registeredClientRepository);
+//    }
 
     @Bean
     AuthorizationServerSettings authorizationServerSettings() {
@@ -101,6 +102,37 @@ public class AuthorizationServerConfig {
 //    public JwtDecoder jwtDecoder(JWKSource<SecurityContext> jwkSource) {
 //        return OAuth2AuthorizationServerConfiguration.jwtDecoder(jwkSource);
 //    }
+
+    @Bean
+    public OAuth2TokenCustomizer<JwtEncodingContext> jwtEncodingContextOAuth2TokenCustomizer() {
+        return context -> {
+            if (context.getTokenType().getValue().equals(OAuth2TokenType.ACCESS_TOKEN.getValue())) {
+                Authentication principal = context.getPrincipal();
+                String tenant_id = principal.getName();
+                var authorities = principal.getAuthorities()
+                        .stream()
+                        .map(GrantedAuthority::getAuthority)
+                        .collect(Collectors.toSet());
+                context.getClaims().claim("tenant_id", tenant_id);
+                context.getClaims().claim("authorities", authorities);
+            }
+        };
+    }
+
+    @Bean
+    public JwtAuthenticationConverter jwtAuthenticationConverter() {
+        JwtGrantedAuthoritiesConverter grantedAuthoritiesConverter = new JwtGrantedAuthoritiesConverter();
+        grantedAuthoritiesConverter.setAuthorityPrefix("");
+        grantedAuthoritiesConverter.setAuthoritiesClaimName(AUTHORITIES_KEY);
+
+        JwtAuthenticationConverter jwtAuthenticationConverter = new JwtAuthenticationConverter();
+        jwtAuthenticationConverter.setJwtGrantedAuthoritiesConverter(grantedAuthoritiesConverter);
+        return jwtAuthenticationConverter;
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
 }
 
-// http://127.0.0.1:3000/login/oauth2/code/main-client-oidc?code=Y7wnojxMa6jgQ1Iw4U1URDxaXykVQTp8rf6QInvIMEvG8zC8emr90rZV-r6JrALXCzcUTBufocQ_r3fEv5sqtUZx8Lg2zi5uXKRLDQWVo_kU-w8gzAd5acKl3xXHVc9p
